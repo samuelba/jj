@@ -711,11 +711,7 @@ impl CommandHelper {
                                 .runner
                                 .options
                                 .start_transaction(repo, workspace_name);
-                            let events = CliRunnerEvents::new(
-                                ui,
-                                &workspace_command.env,
-                                &workspace_command.commit_summary_template_text,
-                            );
+                            let events = CliRunnerEvents::new(ui, &workspace_command.env);
                             try_reset_git_head(
                                 &events,
                                 tx.repo_mut(),
@@ -980,6 +976,9 @@ pub struct WorkspaceCommandEnvironment {
     base: Arc<WorkspaceEnvironment>,
     command: CommandHelper,
     template_aliases_map: TemplateAliasesMap,
+    // TODO: Parsed template can be cached if it doesn't capture 'repo lifetime
+    commit_summary_template_text: String,
+    op_summary_template_text: String,
 }
 
 impl Deref for WorkspaceCommandEnvironment {
@@ -997,6 +996,8 @@ impl WorkspaceCommandEnvironment {
         let fileset_aliases_map = load_fileset_aliases(ui, settings.config())?;
         let revset_aliases_map = load_revset_aliases(ui, settings.config())?;
         let template_aliases_map = load_template_aliases(ui, settings.config())?;
+        let commit_summary_template_text = settings.get_string("templates.commit_summary")?;
+        let op_summary_template_text = settings.get_string("templates.op_summary")?;
         let mut diagnostics = WorkspaceEnvironmentDiagnostics::new();
         let result = WorkspaceEnvironment::new(
             &mut diagnostics,
@@ -1012,6 +1013,8 @@ impl WorkspaceCommandEnvironment {
             base: Arc::new(base),
             command: command.clone(),
             template_aliases_map,
+            commit_summary_template_text,
+            op_summary_template_text,
         })
     }
 
@@ -1182,17 +1185,10 @@ struct CliRunnerEvents<'a> {
 }
 
 impl<'a> CliRunnerEvents<'a> {
-    fn new(
-        ui: &'a Ui,
-        env: &'a WorkspaceCommandEnvironment,
-        commit_summary_template_text: &'a str,
-    ) -> Self {
+    fn new(ui: &'a Ui, env: &'a WorkspaceCommandEnvironment) -> Self {
         Self {
             ui,
-            reporter: WorkspaceReporter {
-                env,
-                commit_summary_template_text,
-            },
+            reporter: WorkspaceReporter { env },
             id_prefix_context: RefCell::new(None),
         }
     }
@@ -1985,9 +1981,6 @@ pub struct WorkspaceCommandHelper {
     /// Cache of short commit/change ID prefixes for `runner.repo`. Must be
     /// reset whenever the repo changes.
     id_prefix_context: OnceCell<IdPrefixContext>,
-    // TODO: Parsed template can be cached if it doesn't capture 'repo lifetime
-    commit_summary_template_text: String,
-    op_summary_template_text: String,
 }
 
 impl WorkspaceCommandHelper {
@@ -2000,9 +1993,6 @@ impl WorkspaceCommandHelper {
         options: RunnerOptions,
         may_snapshot_working_copy: bool,
     ) -> Result<Self, CommandError> {
-        let settings = workspace.settings();
-        let commit_summary_template_text = settings.get_string("templates.commit_summary")?;
-        let op_summary_template_text = settings.get_string("templates.op_summary")?;
         let runner = WorkspaceOperationRunner::new(
             workspace,
             repo,
@@ -2014,13 +2004,11 @@ impl WorkspaceCommandHelper {
             runner,
             env,
             id_prefix_context: OnceCell::new(),
-            commit_summary_template_text,
-            op_summary_template_text,
         };
         // Parse commit_summary template early to report error before starting
         // mutable operation.
-        helper.parse_operation_template(ui, &helper.op_summary_template_text)?;
-        helper.parse_commit_template(ui, &helper.commit_summary_template_text)?;
+        helper.parse_operation_template(ui, &helper.env.op_summary_template_text)?;
+        helper.parse_commit_template(ui, &helper.env.commit_summary_template_text)?;
         helper.parse_commit_template(ui, SHORT_CHANGE_ID_TEMPLATE_TEXT)?;
         Ok(helper)
     }
@@ -2056,7 +2044,7 @@ impl WorkspaceCommandHelper {
         config: &SnapshotConfig,
         git_import_export_lock: &GitImportExportLock,
     ) -> Result<SnapshotStats, RunnerError> {
-        let events = CliRunnerEvents::new(ui, &self.env, &self.commit_summary_template_text);
+        let events = CliRunnerEvents::new(ui, &self.env);
         let result = self
             .runner
             .snapshot(&events, config, git_import_export_lock)
@@ -2073,7 +2061,7 @@ impl WorkspaceCommandHelper {
         config: &SnapshotConfig,
         git_import_export_lock: &GitImportExportLock,
     ) -> Result<SnapshotStats, RunnerError> {
-        let events = CliRunnerEvents::new(ui, &self.env, &self.commit_summary_template_text);
+        let events = CliRunnerEvents::new(ui, &self.env);
         let result = self
             .runner
             .snapshot_working_copy(&events, config, git_import_export_lock)
@@ -2090,7 +2078,7 @@ impl WorkspaceCommandHelper {
         tx: Transaction,
         description: impl Into<String>,
     ) -> Result<(), RunnerError> {
-        let events = CliRunnerEvents::new(ui, &self.env, &self.commit_summary_template_text);
+        let events = CliRunnerEvents::new(ui, &self.env);
         let result = self
             .runner
             .finish_transaction(&events, tx, description)
@@ -2531,7 +2519,7 @@ to the current parents may contain changes from multiple commits.
     pub fn commit_summary_template(&self) -> TemplateRenderer<'_, Commit> {
         let language = self.commit_template_language();
         self.env
-            .reparse_valid_template(&language, &self.commit_summary_template_text)
+            .reparse_valid_template(&language, &self.env.commit_summary_template_text)
             .labeled(["commit"])
     }
 
@@ -2539,7 +2527,7 @@ to the current parents may contain changes from multiple commits.
     pub fn operation_summary_template(&self) -> TemplateRenderer<'_, Operation> {
         let language = self.operation_template_language();
         self.env
-            .reparse_valid_template(&language, &self.op_summary_template_text)
+            .reparse_valid_template(&language, &self.env.op_summary_template_text)
             .labeled(["operation"])
     }
 
@@ -2630,10 +2618,7 @@ to the current parents may contain changes from multiple commits.
     }
 
     fn reporter(&self) -> WorkspaceReporter<'_> {
-        WorkspaceReporter {
-            env: &self.env,
-            commit_summary_template_text: &self.commit_summary_template_text,
-        }
+        WorkspaceReporter { env: &self.env }
     }
 
     async fn print_updated_working_copy_stats(
@@ -2775,7 +2760,6 @@ async fn try_reset_git_head(
 /// templates.
 struct WorkspaceReporter<'a> {
     env: &'a WorkspaceCommandEnvironment,
-    commit_summary_template_text: &'a str,
 }
 
 impl WorkspaceReporter<'_> {
@@ -2786,7 +2770,7 @@ impl WorkspaceReporter<'_> {
     ) -> TemplateRenderer<'b, Commit> {
         let language = self.env.commit_template_language(repo, id_prefix_context);
         self.env
-            .reparse_valid_template(&language, self.commit_summary_template_text)
+            .reparse_valid_template(&language, &self.env.commit_summary_template_text)
             .labeled(["commit"])
     }
 
@@ -3109,7 +3093,7 @@ impl WorkspaceCommandTransaction<'_> {
         let language = self.commit_template_language();
         self.helper
             .env
-            .reparse_valid_template(&language, &self.helper.commit_summary_template_text)
+            .reparse_valid_template(&language, &self.helper.env.commit_summary_template_text)
             .labeled(["commit"])
     }
 
