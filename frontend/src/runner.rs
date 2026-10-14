@@ -38,9 +38,11 @@ use jj_lib::revset::RevsetResolutionError;
 use jj_lib::transaction::Transaction;
 use jj_lib::transaction::TransactionCommitError;
 use jj_lib::working_copy::CheckoutError;
+use jj_lib::working_copy::CheckoutStats;
 use jj_lib::working_copy::ResetError;
 use jj_lib::working_copy::SnapshotError;
 use jj_lib::working_copy::SnapshotOptions;
+use jj_lib::working_copy::SnapshotProgress;
 use jj_lib::working_copy::WorkingCopyStateError;
 use thiserror::Error;
 
@@ -131,6 +133,25 @@ pub enum RunnerEvent {
         /// The new working-copy commit.
         new_wc_commit: Commit,
     },
+    /// The working copy was updated from `old_commit` to `new_commit`.
+    WorkingCopyUpdated {
+        /// The repo containing the commits.
+        repo: Arc<ReadonlyRepo>,
+        /// The previous working-copy commit, if any.
+        old_commit: Option<Commit>,
+        /// The new working-copy commit.
+        new_commit: Commit,
+        /// Statistics about the files updated in the working copy.
+        stats: CheckoutStats,
+    },
+    /// A transaction was committed, changing the repo from `old_repo` to
+    /// `new_repo`.
+    TransactionFinished {
+        /// The repo before the transaction.
+        old_repo: Arc<ReadonlyRepo>,
+        /// The repo after the transaction.
+        new_repo: Arc<ReadonlyRepo>,
+    },
     /// The user's name or email isn't configured, so new commits will have an
     /// empty author and committer.
     UserIdentityNotConfigured {
@@ -173,6 +194,19 @@ pub enum RebaseReason {
     RewrittenInGit,
     /// The working-copy commit was rewritten by a snapshot.
     WorkingCopySnapshot,
+}
+
+/// Receives [`RunnerEvent`]s from a `WorkspaceOperationRunner`.
+pub trait RunnerEvents {
+    /// Handles `event`. Returning an error aborts the operation, and the error
+    /// is returned from the runner as [`RunnerError::EventSink`].
+    fn event(&self, event: RunnerEvent) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Returns a callback for reporting progress while snapshotting the working
+    /// copy.
+    fn snapshot_progress(&self) -> Option<Box<SnapshotProgress<'_>>> {
+        None
+    }
 }
 
 /// Configuration used when snapshotting the working copy and importing changes
@@ -283,13 +317,6 @@ pub enum RunnerError {
     /// The caller failed to handle a [`RunnerEvent`].
     #[error(transparent)]
     EventSink(Box<dyn std::error::Error + Send + Sync>),
-}
-
-impl RunnerError {
-    /// Wraps an error from the caller's handling of a [`RunnerEvent`].
-    pub fn event_sink(err: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
-        Self::EventSink(err.into())
-    }
 }
 
 /// The working copy can't be snapshotted because it's not at the repo's
