@@ -80,6 +80,7 @@ use jj_lib::working_copy::SnapshotError;
 use jj_lib::working_copy::SnapshotOptions;
 use jj_lib::working_copy::SnapshotStats;
 use jj_lib::workspace::Workspace;
+use jj_lib::workspace_store::WorkspaceType;
 use pollster::FutureExt as _;
 use tempfile::TempDir;
 
@@ -274,15 +275,40 @@ impl TestRepo {
     }
 
     pub fn init_with_backend(backend: TestRepoBackend) -> Self {
-        Self::init_with_backend_and_settings(backend, &user_settings())
+        Self::init_with_backend_and_settings(
+            backend,
+            WorkspaceName::DEFAULT,
+            WorkspaceType::Regular,
+            &user_settings(),
+        )
+    }
+
+    pub fn init_with_backend_and_custom_workspace(
+        backend: TestRepoBackend,
+        workspace_name: &WorkspaceName,
+        workspace_type: WorkspaceType,
+    ) -> Self {
+        Self::init_with_backend_and_settings(
+            backend,
+            workspace_name,
+            workspace_type,
+            &user_settings(),
+        )
     }
 
     pub fn init_with_settings(settings: &UserSettings) -> Self {
-        Self::init_with_backend_and_settings(TestRepoBackend::Test, settings)
+        Self::init_with_backend_and_settings(
+            TestRepoBackend::Test,
+            WorkspaceName::DEFAULT,
+            WorkspaceType::Regular,
+            settings,
+        )
     }
 
     pub fn init_with_backend_and_settings(
         backend: TestRepoBackend,
+        _workspace_name: &WorkspaceName,
+        _workspace_type: WorkspaceType,
         settings: &UserSettings,
     ) -> Self {
         let env = TestEnvironment::init();
@@ -357,6 +383,7 @@ impl TestWorkspace {
             settings,
             &workspace_root,
             WorkspaceName::DEFAULT,
+            WorkspaceType::Regular,
             &|settings, store_path| backend.init_backend(&env, settings, store_path),
             signer,
         )
@@ -378,6 +405,7 @@ impl TestWorkspace {
             &user_settings(),
             &workspace_root,
             WorkspaceName::DEFAULT,
+            WorkspaceType::Regular,
             gix::hash::Kind::default(),
         )
         .block_on()
